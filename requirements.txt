@@ -1,0 +1,11 @@
+streamlit
+torch
+torchvision
+torchaudio
+albumentations
+opencv-python
+pandas
+numpy
+gdown
+scikit-learn
+matplotlib
