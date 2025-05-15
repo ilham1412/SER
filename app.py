@@ -1,97 +1,168 @@
 import os
-import gdown
 import streamlit as st
-import torch
-import torch.nn as nn
-from torchvision import models
-from PIL import Image
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 import numpy as np
+import librosa
+import soundfile as sf
+import joblib
+import sounddevice as sd
+from pydub import AudioSegment
+import tempfile
 
-# Define the custom EnsembleModel class (same as used for training)
-class EnsembleModel(nn.Module):
-    def __init__(self):
-        super(EnsembleModel, self).__init__()
-        self.efficientnet_b4 = models.efficientnet_b4(weights='DEFAULT')
-        self.resnet = models.resnet50(weights='DEFAULT')
+# Load model, scaler, dan encoder
+model = joblib.load("model.pkl")
+scaler = joblib.load("scaler.pkl")
+label_encoder = joblib.load("label_encoder.pkl")
 
-        num_classes = 5  # Adjust this according to your problem
-        self.efficientnet_b4.classifier[1] = nn.Linear(self.efficientnet_b4.classifier[1].in_features, num_classes)
-        self.resnet.fc = nn.Linear(self.resnet.fc.in_features, num_classes)
+# Konversi MP3 ke WAV
+def convert_to_wav(file_path, out_path='temp_converted.wav'):
+    sound = AudioSegment.from_file(file_path)
+    sound.export(out_path, format='wav')
+    return out_path
 
-    def forward(self, x):
-        out_efficientnet = self.efficientnet_b4(x)
-        out_resnet = self.resnet(x)
-        out = (out_efficientnet + out_resnet) / 2
-        return out
-
-# Download model from Google Drive if not present
-model_path = "model.pth"
-if not os.path.exists(model_path):
-    st.info("Downloading the model. This may take a few minutes...")
-    gdrive_url = "https://drive.google.com/uc?id=1Xqnba2TQI2Fw0_EXACfRp4r5cE9KNIJ2"
-    gdown.download(gdrive_url, model_path, quiet=False)
-
-# Load the trained model
-device = torch.device('cpu')
-model = EnsembleModel().to(device)
-model.load_state_dict(torch.load(model_path, map_location=device))
-model.eval()
-
-# Define preprocessing transformations
-transform = A.Compose([
-    A.Resize(224, 224),
-    A.ToGray(p=1.0),
-    A.GaussianBlur(blur_limit=5, sigma_limit=(0.1, 2.0)),
-    A.Normalize(mean=(0.5,), std=(0.5,)),
-    ToTensorV2()
-])
-
-def preprocess_image(image):
-    image = Image.open(image).convert('RGB')
-    image_np = np.array(image)
-    transformed = transform(image=image_np)
-    tensor_image = transformed['image'].unsqueeze(0)
-    return tensor_image
-
-# Streamlit App
-st.title("Facial Expression Recognition")
-
-uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
+# Ekstraksi fitur audio
+def extract_features(file_path):
     try:
-        image_tensor = preprocess_image(uploaded_file)
+        y, sr = librosa.load(file_path, sr=None, duration=3)  # Pastikan 3 detik
 
-        # Make a prediction
-        with torch.no_grad():
-            output = model(image_tensor)
+        # MFCC
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+        mfcc_mean = np.mean(mfcc.T, axis=0)
 
-        _, predicted_class = torch.max(output, 1)
+        # RMSE
+        rmse = librosa.feature.rms(y=y)
+        rmse_mean = np.mean(rmse)
 
-        # Map predicted class to label
-        expression_mapping = {
-            0: "Angry",
-            1: "Happy",
-            2: "Neutral",
-            3: "Sad"
-        }
-        label = predicted_class.item()
-        expression = expression_mapping.get(label, "Unknown")
+        # ZCR
+        zcr = librosa.feature.zero_crossing_rate(y=y)
+        zcr_mean = np.mean(zcr)
 
-        # Map expressions to song lists
-        song_mapping = {
-            "Angry": ['"Killing in the Name" – Rage Against the Machine', '"Break Stuff" – Limp Bizkit', '"Headstrong" – Trapt'],
-            "Happy": ['"Happy" – Pharrell Williams', '"Can’t Stop the Feeling!" – Justin Timberlake', '"Good as Hell" – Lizzo'],
-            "Neutral": ['"Clocks" – Coldplay', '"Photograph" – Ed Sheeran', '"Viva La Vida" – Coldplay'],
-            "Sad": ['"Someone Like You" – Adele', '"The Night We Met" – Lord Huron', '"Hurt" – Johnny Cash']
-        }
-        songs = song_mapping.get(expression, [])
+        # Pitch
+        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+        pitch_values = pitches[pitches > 0]
+        pitch_mean = np.mean(pitch_values) if pitch_values.size > 0 else 0.0
 
-        st.success(f"Detected Expression: {expression}")
-        st.write("Suggested Songs:")
-        for song in songs:
-            st.write(f"- {song}")
+        # Chroma
+        chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+        chroma_mean = np.mean(chroma.T, axis=0)
+
+        # Spectral Contrast
+        contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
+        contrast_mean = np.mean(contrast.T, axis=0)
+
+        features = np.hstack([
+            mfcc_mean,
+            pitch_mean,
+            rmse_mean,
+            zcr_mean,
+            chroma_mean,
+            contrast_mean
+        ])
+
+        return features
     except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
+        print(f"Error processing {file_path}: {e}")
+        return None
+
+# Prediksi & rekomendasi
+def predict_and_recommend(features):
+    features_scaled = scaler.transform([features])
+    prediction = model.predict(features_scaled)
+    label = prediction[0]
+    expression = label_encoder.inverse_transform([label])[0]
+    songs = song_mapping.get(expression.lower(), [])
+    return expression, songs
+
+# Rekomendasi lagu berdasarkan emosi
+song_mapping = {
+    "neutral": [
+        '"Clocks" – Coldplay',
+        '"Photograph" – Ed Sheeran',
+        '"Viva La Vida" – Coldplay'
+    ],
+    "calm": [
+        '"Weightless" – Marconi Union',
+        '"Strawberry Swing" – Coldplay',
+        '"Bloom" – The Paper Kites'
+    ],
+    "happy": [
+        '"Happy" – Pharrell Williams',
+        '"Can’t Stop the Feeling!" – Justin Timberlake',
+        '"Good as Hell" – Lizzo'
+    ],
+    "sad": [
+        '"Someone Like You" – Adele',
+        '"The Night We Met" – Lord Huron',
+        '"Hurt" – Johnny Cash'
+    ],
+    "angry": [
+        '"Killing in the Name" – Rage Against the Machine',
+        '"Break Stuff" – Limp Bizkit',
+        '"Headstrong" – Trapt'
+    ],
+    "fearful": [
+        '"The Sound of Silence" – Simon & Garfunkel',
+        '"Breathe Me" – Sia',
+        '"Mad World" – Gary Jules'
+    ],
+    "disgust": [
+        '"Toxic" – Britney Spears',
+        '"Bad Guy" – Billie Eilish',
+        '"Uptown Funk" – Mark Ronson ft. Bruno Mars'
+    ],
+    "surprised": [
+        '"Eye of the Tiger" – Survivor',
+        '"Take On Me" – a-ha',
+        '"Don’t Stop Me Now" – Queen'
+    ]
+}
+
+# UI: Judul dan upload
+st.set_page_config(page_title="Deteksi Ekspresi Suara", layout="centered")
+st.title("🎵 Deteksi Ekspresi Suara & Rekomendasi Lagu")
+
+# Upload audio file
+uploaded_audio = st.file_uploader("Unggah file audio (wav/mp3)", type=["wav", "mp3"])
+if uploaded_audio:
+    ext = uploaded_audio.name.split(".")[-1].lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+        tmp.write(uploaded_audio.getbuffer())
+        tmp.flush()
+
+        file_path = convert_to_wav(tmp.name) if ext == "mp3" else tmp.name
+        features = extract_features(file_path)
+
+        if features is not None:
+            expression, songs = predict_and_recommend(features)
+            st.success(f"Ekspresi terdeteksi: **{expression.upper()}**")
+            st.write("🎧 Rekomendasi lagu:")
+            for song in songs:
+                st.write(f"- {song}")
+        else:
+            st.error("Gagal mengekstraksi fitur dari audio.")
+
+# Rekaman langsung
+st.subheader("🎙️ Rekam Suara Langsung")
+
+def record_audio(duration=3, fs=16000):
+    st.write("Mulai merekam...")
+    audio = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
+    sd.wait()
+    st.write("Rekaman selesai.")
+    return audio.flatten()
+
+if st.button("Rekam Suara"):
+    audio_data = record_audio()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+        sf.write(temp_file.name, audio_data, 16000)
+        st.audio(temp_file.name)
+
+        features = extract_features(temp_file.name)
+        if features is not None:
+            expression, songs = predict_and_recommend(features)
+            st.success(f"Ekspresi terdeteksi: **{expression.upper()}**")
+            st.write("🎧 Rekomendasi lagu:")
+            for song in songs:
+                st.write(f"- {song}")
+        else:
+            st.error("Gagal mengekstraksi fitur dari rekaman.")
