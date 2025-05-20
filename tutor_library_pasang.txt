@@ -1,0 +1,13 @@
+Membuat virtual environment...
+python -m venv venv
+
+Mengaktifkan virtual environment...
+venv\Scripts\activate.bat
+
+Menginstal requirements...
+pip install --upgrade pip
+pip install -r requirements.txt
+
+
+Semua dependensi berhasil diinstal!
+

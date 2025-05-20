@@ -22,7 +22,7 @@ def convert_to_wav(file_path, out_path='temp_converted.wav'):
 # Ekstraksi fitur audio
 def extract_features(file_path):
     try:
-        y, sr = librosa.load(file_path, sr=None, duration=3)  # Pastikan 3 detik
+        y, sr = librosa.load(file_path, sr=None, duration=5)  # Pastikan 3 detik
 
         # MFCC
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
@@ -143,7 +143,7 @@ if uploaded_audio:
 # Rekaman langsung
 st.subheader("🎙️ Rekam Suara Langsung")
 
-def record_audio(duration=3, fs=16000):
+def record_audio(duration=5, fs=16000):
     st.write("Mulai merekam...")
     audio = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
     sd.wait()
