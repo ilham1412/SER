@@ -19,33 +19,38 @@ def convert_to_wav(file_path, out_path='temp_converted.wav'):
     sound.export(out_path, format='wav')
     return out_path
 
-# Ekstraksi fitur audio
-def extract_features(file_path):
-    try:
-        y, sr = librosa.load(file_path, sr=None, duration=5)  # Pastikan 3 detik
+# Preprocessing audio: normalisasi + pre-emphasis
+def preprocess_audio(file_path):
+    y, sr = librosa.load(file_path, sr=None, duration=5)
 
-        # MFCC
+    # Normalisasi amplitudo
+    y = y / np.max(np.abs(y))
+
+    # Pre-emphasis filter
+    pre_emphasis = 0.97
+    y = np.append(y[0], y[1:] - pre_emphasis * y[:-1])
+
+    return y, sr
+
+# Ekstraksi fitur dari y dan sr
+def extract_features(y, sr):
+    try:
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         mfcc_mean = np.mean(mfcc.T, axis=0)
 
-        # RMSE
         rmse = librosa.feature.rms(y=y)
         rmse_mean = np.mean(rmse)
 
-        # ZCR
         zcr = librosa.feature.zero_crossing_rate(y=y)
         zcr_mean = np.mean(zcr)
 
-        # Pitch
         pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
         pitch_values = pitches[pitches > 0]
         pitch_mean = np.mean(pitch_values) if pitch_values.size > 0 else 0.0
 
-        # Chroma
         chroma = librosa.feature.chroma_stft(y=y, sr=sr)
         chroma_mean = np.mean(chroma.T, axis=0)
 
-        # Spectral Contrast
         contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
         contrast_mean = np.mean(contrast.T, axis=0)
 
@@ -60,10 +65,10 @@ def extract_features(file_path):
 
         return features
     except Exception as e:
-        print(f"Error processing {file_path}: {e}")
+        print(f"Error extracting features: {e}")
         return None
 
-# Prediksi & rekomendasi
+# Prediksi dan rekomendasi lagu
 def predict_and_recommend(features):
     features_scaled = scaler.transform([features])
     prediction = model.predict(features_scaled)
@@ -72,7 +77,7 @@ def predict_and_recommend(features):
     songs = song_mapping.get(expression.lower(), [])
     return expression, songs
 
-# Rekomendasi lagu berdasarkan emosi
+# Rekomendasi lagu berdasarkan ekspresi
 song_mapping = {
     "neutral": [
         '"Clocks" – Coldplay',
@@ -116,7 +121,7 @@ song_mapping = {
     ]
 }
 
-# UI: Judul dan upload
+# Konfigurasi Streamlit
 st.set_page_config(page_title="Deteksi Ekspresi Suara", layout="centered")
 st.title("🎵 Deteksi Ekspresi Suara & Rekomendasi Lagu")
 
@@ -129,7 +134,8 @@ if uploaded_audio:
         tmp.flush()
 
         file_path = convert_to_wav(tmp.name) if ext == "mp3" else tmp.name
-        features = extract_features(file_path)
+        y, sr = preprocess_audio(file_path)
+        features = extract_features(y, sr)
 
         if features is not None:
             expression, songs = predict_and_recommend(features)
@@ -157,7 +163,8 @@ if st.button("Rekam Suara"):
         sf.write(temp_file.name, audio_data, 16000)
         st.audio(temp_file.name)
 
-        features = extract_features(temp_file.name)
+        y, sr = preprocess_audio(temp_file.name)
+        features = extract_features(y, sr)
         if features is not None:
             expression, songs = predict_and_recommend(features)
             st.success(f"Ekspresi terdeteksi: **{expression.upper()}**")
